@@ -1,0 +1,29 @@
+{
+  "name": "scraper",
+  "description": "Web scraping framework for use with message queues",
+  "license": "MIT",
+  "author": "Boris Saranin <octob3rguy@gmail.com>",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "keywords": [],
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.4",
+    "@ulixee/hero": "^2.0.0-alpha.30",
+    "@ulixee/hero-core": "^2.0.0-alpha.30"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.4",
+    "typescript": "^5.6.3",
+    "ts-node": "^10.9.2"
+  }
+}
