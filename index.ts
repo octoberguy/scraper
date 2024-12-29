@@ -1,4 +1,5 @@
 // noinspection JSUnusedGlobalSymbols
 
-export {default as scraper} from "./src/core";
-export {Controller} from "./src/controller";
+export {Core} from "./src/core";
+export {AbstractController} from "./src/controller";
+export {ILogger} from "./src/logger";
