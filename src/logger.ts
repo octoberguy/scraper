@@ -1,7 +1,8 @@
 export interface ILogger {
-    constructor(parent?: ILogger)
-    debug(message: string, meta: { [p: string]: any }): void
-    info(message: string, meta: { [p: string]: any }): void
-    warn(message: string, meta: { [p: string]: any }): void
-    error(message: string, meta: { e: Error, [p: string]: any }): void
+    debug(action: string, context?: { [p: string]: any }): void
+    info(action: string, context?: { [p: string]: any }): void
+    warn(action: string, context?: { [p: string]: any }): void
+    error(action: string, context: { e: Error, [p: string]: any }): void
+    createChild(boundContext: {[p: string]: any}): ILogger
+    addToContext(boundContext: {[p: string]: any}): void
 }
