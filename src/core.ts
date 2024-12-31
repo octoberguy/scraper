@@ -1,64 +1,108 @@
-import amqp, {Channel, Connection, ConsumeMessage, Options, Replies} from "amqplib";
-import HeroCore from "@ulixee/hero-core";
-import TransportBridge from "@ulixee/net/lib/TransportBridge";
-import Hero, {ConnectionToHeroCore, IHeroCreateOptions} from "@ulixee/hero";
+import amqp from "amqplib";
+import Hero from "@ulixee/hero";
+import type {Channel, Connection, ConsumeMessage, Options} from "amqplib";
 import type {Controller} from "./controller";
+import type {ILogger} from "./logger";
 
-class Core {
-    private queuesConnection: Connection;
-    private queuesChannel: Channel;
-    private browserConnection: ConnectionToHeroCore;
-    private browserCore: HeroCore;
+interface Queue {
+    name: string,
+    prefetch: number,
+    consumeOptions: Options.Consume,
+    assertOptions: Options.AssertQueue,
+}
+interface Settings {
+    maxRetry?: number;
+    logger: ILogger,
+    envelopeValidationFunc: Function;
+    browserHost: string,
+    amqpOptions: Options.Connect,
+    queues: Queue[],
+    controllers: Controller[],
+}
+interface Envelope {
+    uuid: string,
+    previous_attempts_uuids: string[],
+    controller: string,
+    message_uuid: string,
+    message: { [p: string]: any },
+}
+export class Core {
+    settings: Settings;
+    private logger: ILogger;
+    private connection: Connection;
+    private channels: Map<string, Channel> = new Map();
+    private consumers: {tag: string, channel: Channel}[] = [];
     private controllers: Map<string, Controller> = new Map();
-    private consumerTags: string[];
     private tasksCount = 0;
     private onZeroTasks: Function = null;
 
-    async start(amqpOptions: Options, controllers: Controller[]) {
-        const bridge = new TransportBridge();
-        this.browserConnection = new ConnectionToHeroCore(bridge.transportToCore);
-        this.browserCore = new HeroCore();
-        this.browserCore.addConnection(bridge.transportToClient);
-        await this.browserCore.start();
+    async start(settings: Settings): Promise<void> {
+        this.settings = settings;
+        this.logger = settings.logger;
+        for (let controller of settings.controllers)
+            this.controllers.set(controller.name, controller);
 
-        this.queuesConnection = await amqp.connect(amqpOptions);
-        this.queuesChannel = await this.queuesConnection.createChannel();
-        await this.queuesChannel.prefetch(10);
+        this.connection = await amqp.connect(settings.amqpOptions);
 
-        process.on('SIGINT', () => this.stop());
-        process.on('SIGTERM', () => this.stop());
+        process.on('SIGINT', this.stop.bind(this));
+        process.on('SIGTERM', this.stop.bind(this));
 
-        const consumeReplies: Promise<Replies.Consume>[] = [];
-        const assertReplies: Promise<Replies.AssertExchange>[] = [];
-        const assertedExchangesNames = [];
-        const handler = msg => this.handle(msg);
-        const options = {noAck: false};
-        for (let ctrl of controllers) {
-            this.controllers.set(ctrl.name, ctrl);
-
-            if (!assertedExchangesNames.includes(ctrl.exchangeName)) {
-                assertReplies.push(this.queuesChannel.assertExchange(ctrl.exchangeName, ctrl.exchangeType));
-                assertedExchangesNames.push(ctrl.exchangeName);
-            }
-            consumeReplies.push(this.queuesChannel.consume(ctrl.queue, handler, options));
-        }
-
-        await Promise.all(assertReplies);
-        this.consumerTags = await Promise.all(consumeReplies)
-            .then(replies => replies.map(reply => reply.consumerTag));
+        await Promise.all(settings.queues.map(async queue => {
+            const channel = await this.connection.createChannel();
+            await channel.prefetch(queue.prefetch);
+            await channel.assertQueue(queue.name, queue.assertOptions);
+            const handler = async (msg: ConsumeMessage|null): Promise<void> => {
+                if (msg === null)
+                    return;
+                try {
+                    await this.handle(msg);
+                    channel.ack(msg);
+                } catch (e) {
+                    this.logger.error('Envelope processing failed', {e, envelope: msg.content.toString()});
+                    channel.reject(msg, false);
+                }
+            };
+            const consumerInfo = await channel.consume(queue.name, handler, queue.consumeOptions);
+            this.consumers.push({tag: consumerInfo.consumerTag, channel});
+            this.channels.set(queue.name, channel);
+        }));
     }
 
-    async stop() {
-        await Promise.all(this.consumerTags.map(tag => this.queuesChannel.cancel(tag)));
+    async stop(): Promise<void> {
+        await Promise.all(this.consumers.map(consumer => consumer.channel.cancel(consumer.tag)));
         if (this.tasksCount > 0)
             await new Promise(resolve => this.onZeroTasks = resolve);
-        await Promise.all([this.queuesConnection.close(), this.browserCore.close()]);
+        await this.connection.close();
     }
 
-    private async handle(msg: ConsumeMessage|null) {
+    private async handle(msg: ConsumeMessage): Promise<void> {
+        const envelope: Envelope = JSON.parse(msg.content.toString());
+        if (!envelope.uuid?.length || !envelope.message_uuid?.length || !envelope.controller?.length || !envelope.message)
+            throw new Error('Missing required fields in envelope');
 
+        const controller = this.controllers.get(envelope.controller);
+        if (controller === undefined)
+            throw new Error('No such controller');
+
+        const sessionLogger = this.logger.createChild({
+            session: envelope.uuid,
+            controller: envelope.controller,
+            task: envelope.message_uuid,
+        });
+        if (envelope.previous_attempts_uuids?.length > this.settings.maxRetry) {
+            sessionLogger.warn('Retry limit reached');
+            return;
+        }
+        // this.settings.envelopeValidationFunc.bind(this)(envelope, sessionLogger); possible validation add-on
+        sessionLogger.info('Message received and validated', {envelope});
+
+        let browser = new Hero({
+
+        });
+        try {
+            await (new controller(this, sessionLogger, browser)).handle(envelope.message);
+        } catch (e) {
+
+        }
     }
 }
-
-const scraperCore = new Core();
-export default scraperCore;
